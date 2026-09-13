@@ -1,4 +1,4 @@
-import { generateText, stepCountIs, tool, type ToolSet } from "ai";
+import { generateText, stepCountIs, tool, type ModelMessage, type ToolSet } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z }  from "zod";
 
@@ -9,7 +9,7 @@ import type {
   MultiTurnResult,
 } from "./types.ts";
 import { writeFile } from "fs/promises";
-import { buildMessages } from "./utils.ts";
+import { buildMessages, buildMockedTools } from "./utils.ts";
 
 const TOOL_DEFINITIONS: any = {
   readFile:  {
@@ -81,4 +81,55 @@ export const singleTurnExecutorWithMocks = async (evalData: EvalData) => {
       selectedAny: toolNames.length > 0,
     };
 
-  }
+}
+
+export const multiTurnExecutorWithMocks = async (evalData: MultiTurnEvalData) => {
+  const tools = buildMockedTools(evalData.mockTools);
+  const messages: ModelMessage[] = evalData.messages ?? [
+    { role: "system", content: evalData.prompt ?? "" },
+    { role: "user", content: evalData.prompt ?? "" }
+  ];
+
+  const result = await generateText({
+    model: openai(evalData.config?.model || "gpt-5-mini"),
+    messages,
+    tools,
+    stopWhen: stepCountIs(evalData.config?.maxSteps ?? 1),
+    providerOptions: {
+      openai: {
+        reasoningEffort: "high",
+      }
+    }
+  });
+  const allToolCalls: string[] = [];
+  const steps = result.steps.map(step => {
+    const stepToolCalls = (step.toolCalls ?? []).map((tc) => {
+      allToolCalls.push(tc.toolName);
+      return {
+        toolName: tc.toolName,
+        args: 'args' in tc ? tc.args : {},
+      };
+    });
+
+    const stepToolResults = (step.staticToolResults ?? []).map((tr) => {
+      return {
+        toolName: tr.toolName,
+        result: 'results' in tr ? tr.results : tr,
+      };
+    });
+
+    return {
+      toolCalls: stepToolCalls.length > 0 ? stepToolCalls : undefined,
+      toolResults: stepToolResults.length > 0 ? stepToolResults : undefined,
+      text: step.text || undefined,
+    }
+
+  });
+  const toolsUsed = [...new Set(allToolCalls)];
+  return {
+    text: result.text,
+    steps,
+    toolsUsed,
+    toolCallOrder: allToolCalls,
+  };
+}
